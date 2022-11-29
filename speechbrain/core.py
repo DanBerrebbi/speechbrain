@@ -7,7 +7,7 @@ Authors
  * Aku Rouhe 2021
  * Andreas Nautsch 2022
 """
-
+import numpy as np
 import os
 import sys
 import yaml
@@ -579,6 +579,7 @@ class Brain:
 
         # Prepare iterating variables
         self.avg_train_loss = 0.0
+        self.avg_train_loss_unsup = 0.0
         self.step = 0
         self.optimizer_step = 0
 
@@ -841,7 +842,7 @@ class Brain:
                 device=torch.device(self.device),
             )
 
-    def fit_batch(self, batch):
+    def fit_batch(self, batch, unsup=False):
         """Fit one batch, override to do multiple updates.
 
         The default implementation depends on a few methods being defined
@@ -881,7 +882,7 @@ class Brain:
                 self.optimizer_step += 1
         else:
             outputs = self.compute_forward(batch, Stage.TRAIN)
-            loss = self.compute_objectives(outputs, batch, Stage.TRAIN)
+            loss = self.compute_objectives(outputs, batch, Stage.TRAIN,  semi_sup=unsup)
             with self.no_sync(not should_step):
                 (loss / self.grad_accumulation_factor).backward()
             if should_step:
@@ -981,8 +982,9 @@ class Brain:
         loss = self.compute_objectives(out, batch, stage=stage)
         return loss.detach().cpu()
 
-    def _fit_train(self, train_set, epoch, enable):
+    def _fit_train(self, train_set, valid_set, train_unsup_set, epoch, enable, pt_epoch=15):
         # Training stage
+        pt_epoch=37
         self.on_stage_start(Stage.TRAIN, epoch)
         self.modules.train()
 
@@ -997,12 +999,118 @@ class Brain:
         # Time since last intra-epoch checkpoint
         last_ckpt_time = time.time()
 
-        with tqdm(
+        if epoch <= pt_epoch:    # inferieur ou egal, oui je sais ce que je fait, c'est pour bien commencer !!! 
+            self.modules_ema = self.modules
+
+        t = tqdm(
             train_set,
             initial=self.step,
             dynamic_ncols=True,
             disable=not enable,
-        ) as t:
+        ) 
+        t_unsup = tqdm(
+            train_unsup_set,
+            initial=self.step,
+            dynamic_ncols=True,
+            disable=not enable,
+        )
+        generator_sup, generator_unsup = t.__iter__(), t_unsup.__iter__()
+        
+        if epoch >= pt_epoch:
+            for iteration in range(500000):
+                if np.random.random()>0.5 :
+                    try : 
+                        batch = generator_unsup.__next__()
+                    except :
+                        t_unsup = tqdm(
+                            train_unsup_set,
+                            initial=self.step,
+                            dynamic_ncols=True,
+                            disable=not enable,
+                        )
+                        generator_unsup = t_unsup.__iter__()
+                        batch = generator_unsup.__next__()
+                    type_iter = "unsup"
+
+                else :
+                    try : 
+                        batch = generator_sup.__next__()
+                    except :
+                        t = tqdm(
+                            train_set,
+                            initial=self.step,
+                            dynamic_ncols=True,
+                            disable=not enable,
+                        ) 
+                        generator_sup = t.__iter__()
+                        batch = generator_sup.__next__()
+                    type_iter = "sup"
+        
+                if self._optimizer_step_limit_exceeded:
+                    logger.info("Train iteration limit exceeded")
+                    break
+                self.step += 1
+
+                loss = self.fit_batch(batch, unsup=(type_iter=="unsup"))
+                if type_iter=="unsup" : 
+                    self.avg_train_loss_unsup = self.update_average(
+                        loss, self.avg_train_loss_unsup
+                    )
+                else : 
+                    self.avg_train_loss = self.update_average(
+                        loss, self.avg_train_loss
+                    )
+
+                # EMA :  Probably very slow, TO BE CHECKED
+
+                if epoch>=pt_epoch:
+                    decay=0.9999
+                    sdA = self.modules.state_dict()
+                    sdB = self.modules_ema.state_dict()
+                    for key in sdA:
+                        sdB[key] = (decay*sdB[key] + (1-decay)*sdA[key])
+                    self.modules_ema.load_state_dict(sdB)
+                
+
+                if type_iter=="unsup" : 
+                    t_unsup.set_postfix(train_loss_unsup=self.avg_train_loss_unsup)
+                else :
+                    t.set_postfix(train_loss_sup=self.avg_train_loss)
+                
+                # Profile only if desired (steps allow the profiler to know when all is warmed up)
+                if self.profiler is not None:
+                    if self.profiler.record_steps:
+                        self.profiler.step()
+
+                # Debug mode only runs a few batches
+                if self.debug and self.step == self.debug_batches:
+                    break
+
+                if (
+                    self.checkpointer is not None
+                    and self.ckpt_interval_minutes > 0
+                    and time.time() - last_ckpt_time
+                    >= self.ckpt_interval_minutes * 60.0
+                ):
+                    # This should not use run_on_main, because that
+                    # includes a DDP barrier. That eventually leads to a
+                    # crash when the processes'
+                    # time.time() - last_ckpt_time differ and some
+                    # processes enter this block while others don't,
+                    # missing the barrier.
+                    if sb.utils.distributed.if_main_process():
+                        self._save_intra_epoch_ckpt()
+                    last_ckpt_time = time.time()
+                
+                if iteration % 1000 == 0 :
+                    print("semisup iteration : {}".format(iteration))
+                    self.on_stage_end(Stage.TRAIN, self.avg_train_loss, epoch)
+                    self.avg_train_loss = 0.0
+                    self.avg_train_loss_unsup = 0.0
+                    self.step = 0
+                    self._fit_valid(valid_set=valid_set, epoch=epoch, enable=enable)
+        
+        else :
             for batch in t:
                 if self._optimizer_step_limit_exceeded:
                     logger.info("Train iteration limit exceeded")
@@ -1013,6 +1121,7 @@ class Brain:
                     loss, self.avg_train_loss
                 )
                 t.set_postfix(train_loss=self.avg_train_loss)
+                #t_unsup.set_postfix(train_loss_unsup=self.avg_train_loss_unsup)
 
                 # Profile only if desired (steps allow the profiler to know when all is warmed up)
                 if self.profiler is not None:
@@ -1038,10 +1147,10 @@ class Brain:
                     if sb.utils.distributed.if_main_process():
                         self._save_intra_epoch_ckpt()
                     last_ckpt_time = time.time()
-
         # Run train "on_stage_end" on all processes
         self.on_stage_end(Stage.TRAIN, self.avg_train_loss, epoch)
         self.avg_train_loss = 0.0
+        self.avg_train_loss_unsup = 0.0
         self.step = 0
 
     def _fit_valid(self, valid_set, epoch, enable):
@@ -1078,10 +1187,12 @@ class Brain:
         self,
         epoch_counter,
         train_set,
+        train_unsup_set=None,
         valid_set=None,
         progressbar=None,
         train_loader_kwargs={},
         valid_loader_kwargs={},
+        pt_epoch=15,
     ):
         """Iterate epochs and datasets to improve objective.
 
@@ -1130,6 +1241,13 @@ class Brain:
             train_set = self.make_dataloader(
                 train_set, stage=sb.Stage.TRAIN, **train_loader_kwargs
             )
+        if not (
+            isinstance(train_unsup_set, DataLoader)
+            or isinstance(train_unsup_set, LoopedLoader)
+        ):
+            train_unsup_set = self.make_dataloader(
+                train_unsup_set, stage=sb.Stage.TRAIN, **train_loader_kwargs
+            )
         if valid_set is not None and not (
             isinstance(valid_set, DataLoader)
             or isinstance(valid_set, LoopedLoader)
@@ -1150,8 +1268,8 @@ class Brain:
         enable = progressbar and sb.utils.distributed.if_main_process()
 
         # Iterate epochs
-        for epoch in epoch_counter:
-            self._fit_train(train_set=train_set, epoch=epoch, enable=enable)
+        for epoch in epoch_counter:   # on pourra facilement changer ca en itération. 
+            self._fit_train(train_set=train_set, valid_set=valid_set, train_unsup_set=train_unsup_set, epoch=epoch, enable=enable, pt_epoch=pt_epoch)
             self._fit_valid(valid_set=valid_set, epoch=epoch, enable=enable)
 
             # Debug mode only runs a few epochs
@@ -1365,3 +1483,4 @@ class Brain:
             self.optimizer_step = self.step
         else:
             self.optimizer_step = save_dict["optimizer_step"]
+

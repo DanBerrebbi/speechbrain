@@ -1,0 +1,187 @@
+# ################################
+# Model: wav2vec2 + DNN + CTC
+# Augmentation: SpecAugment
+# Authors: Sung-Lin Yeh 2021, Rudolf A. Braun 2022, Titouan Parcollet 2022
+# ################################
+
+# Seed needs to be set at top of yaml, before objects with parameters are made
+seed: 1986
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+output_folder: !ref results/train_wav2vec2_libri_100-860-lr0.001-30ep/new_test
+wer_file: !ref <output_folder>/wer.txt
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+
+# Path of the SpeechBrain checkpoints containing the pretrained wav2vec2 model
+# It can be a local path or a HuggingFace hub containing the model
+
+# Data files
+data_folder:  ../../data/LibriSpeech # e,g./path/to/LibriSpeech
+# noise/ris dataset will automatically be downloaded if uncommented
+# data_folder_rirs: !ref <data_folder>
+train_splits: ["train-clean-100"] # ["train-clean-360", "train-other-500"]
+dev_splits: ["dev-other"]
+test_splits: ["test-clean","test-other"]
+unsup_splits: ["train-clean-360","train-other-500"]
+skip_prep: False
+ckpt_interval_minutes: 30 # save checkpoint every N min
+train_csv: !ref <output_folder>/../1986/train.csv
+valid_csv: !ref <output_folder>/../1986/dev-other.csv
+test_csv:
+   - !ref <output_folder>/../1986/test-clean.csv
+   - !ref <output_folder>/../1986/test-other.csv
+unsup_csv: !ref <output_folder>/../1986/train_unsup.csv
+
+# Training parameters
+number_of_epochs: 100
+start_semi_sup: 15 # in epoch for now.
+lr: 0.001
+auto_mix_prec: False
+sample_rate: 16000
+n_fft: 400
+n_mels: 80
+sorting: descending # to check batch size 
+grad_accumulation_factor: 2
+# With data_parallel batch_size is split into N jobs
+# With DDP batch_size is multiplied by N jobs
+# Must be 3 per GPU to fit 32GB of VRAM
+batch_size: 16
+test_batch_size: 8
+
+train_dataloader_opts:
+   batch_size: !ref <batch_size>
+
+valid_dataloader_opts:
+   batch_size: !ref <batch_size>
+
+test_dataloader_opts:
+   batch_size: !ref <test_batch_size>
+
+# Model parameters
+dnn_activation: !new:torch.nn.LeakyReLU
+dnn_neurons: 1024
+dnn_dropout: 0.15
+
+# Outputs
+output_neurons: 31  # BPE size, index(blank/eos/bos) = 0
+
+# Decoding parameters
+blank_index: 0
+
+normalize: !new:speechbrain.processing.features.InputNormalization
+    norm_type: global
+    update_until_epoch: 4
+
+#
+# Functions and classes
+#
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+   limit: !ref <number_of_epochs>
+
+augmentation: !new:speechbrain.lobes.augment.TimeDomainSpecAugment
+   sample_rate: !ref <sample_rate>
+   speeds: [95, 100, 105]
+
+
+
+enc: !new:speechbrain.nnet.containers.Sequential
+   input_shape: [null, null, !ref <d_model>]
+   linear1: !name:speechbrain.nnet.linear.Linear
+      n_neurons: !ref <dnn_neurons>
+      bias: True
+   bn1: !name:speechbrain.nnet.normalization.BatchNorm1d
+   activation: !ref <dnn_activation>
+   drop: !new:torch.nn.Dropout
+      p: !ref <dnn_dropout>
+
+# enc: !new:speechbrain.lobes.models.VanillaNN.VanillaNN
+#   input_shape: [null, null, !ref <wav2vec_output_dim>]
+#   activation: !ref <dnn_activation>
+#   dnn_blocks: 3
+#   dnn_neurons: !ref <dnn_neurons>
+
+d_model: 768
+
+compute_features: !new:speechbrain.lobes.features.Fbank
+    sample_rate: !ref <sample_rate>
+    n_fft: !ref <n_fft>
+    n_mels: !ref <n_mels>
+
+# standard parameters for the BASE model
+CNN: !new:speechbrain.lobes.models.convolution.ConvolutionFrontEnd
+    input_shape: (8, 10, 80)
+    num_blocks: 3
+    num_layers_per_block: 1
+    out_channels: (64, 64, 64)
+    kernel_sizes: (5, 5, 1)
+    strides: (2, 2, 1)
+    residuals: (False, False, True)
+
+cnn_out_dim: 1280
+
+# standard parameters for the BASE model
+encoder: !new:speechbrain.lobes.models.transformer.Transformer.TransformerEncoder
+   d_model: !ref <d_model>
+   num_layers: 12
+   nhead: 8
+   d_ffn: 3072
+   dropout: 0.1
+   layerdrop_prob: 0.0
+   normalize_before: True
+   activation: !name:torch.nn.GELU
+
+# standard parameters for the BASE model
+encoder_wrapper: !new:speechbrain.lobes.models.wav2vec.EncoderWrapper
+   in_dim: !ref <cnn_out_dim>
+   embedding_dim: !ref <d_model>
+   latent_encoder: !ref <encoder>
+   dropout_encoder_input: 0.1
+
+ctc_lin: !new:speechbrain.nnet.linear.Linear
+   input_size: !ref <dnn_neurons>
+   n_neurons: !ref <output_neurons>
+
+log_softmax: !new:speechbrain.nnet.activations.Softmax
+   apply_log: True
+
+ctc_cost: !name:speechbrain.nnet.losses.ctc_loss
+   blank_index: !ref <blank_index>
+
+modules:
+   extractor: !ref <CNN>
+   encoder_wrapper: !ref <encoder_wrapper>
+   enc: !ref <enc>
+   ctc_lin: !ref <ctc_lin>
+   normalize: !ref <normalize>
+
+model: !new:torch.nn.ModuleList
+   - [!ref <CNN>, !ref <encoder>, !ref <enc>, !ref <ctc_lin>]
+
+model_opt_class: !name:torch.optim.Adam
+    lr: !ref <lr>
+    betas: (0.9, 0.98)
+    eps: 0.000000001
+
+#lr_annealing_model: !new:speechbrain.nnet.schedulers.NewBobScheduler
+#   initial_value: !ref <lr>
+#   improvement_threshold: 0.0025
+#   annealing_factor: 0.8
+#   patient: 0
+
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+   checkpoints_dir: !ref <save_folder>
+   recoverables:
+      extractor: !ref <CNN>
+      encoder: !ref <encoder>
+  #    scheduler_model: !ref <lr_annealing_model>
+      counter: !ref <epoch_counter>
+      normalizer: !ref <normalize>
+      
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+   save_file: !ref <train_log>
+
+error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+
+cer_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+   split_tokens: True
