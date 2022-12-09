@@ -32,9 +32,12 @@ def prepare_librispeech(
     tr_splits=[],
     dev_splits=[],
     te_splits=[],
+    unsup_splits=[],
     select_n_sentences=None,
     merge_lst=[],
     merge_name=None,
+    merge_lst_unsup=[],
+    merge_name_unsup=[],
     create_lexicon=False,
     skip_prep=False,
 ):
@@ -83,7 +86,7 @@ def prepare_librispeech(
     if skip_prep:
         return
     data_folder = data_folder
-    splits = tr_splits + dev_splits + te_splits
+    splits = tr_splits + dev_splits + te_splits + unsup_splits
     save_folder = save_folder
     select_n_sentences = select_n_sentences
     conf = {
@@ -138,6 +141,13 @@ def prepare_librispeech(
         merge_files = [split_libri + ".csv" for split_libri in merge_lst]
         merge_csvs(
             data_folder=save_folder, csv_lst=merge_files, merged_csv=merge_name,
+        )
+
+    # Merging csv file if needed FOR UNSUP
+    if merge_lst_unsup and merge_name_unsup is not None:
+        merge_files = [split_libri + ".csv" for split_libri in merge_lst_unsup]
+        merge_csvs(
+            data_folder=save_folder, csv_lst=merge_files, merged_csv=merge_name_unsup,
         )
 
     # Create lexicon.csv and oov.csv
@@ -428,3 +438,4 @@ def check_librispeech_folders(data_folder, splits):
                 "Librispeech dataset)" % split_folder
             )
             raise OSError(err_msg)
+

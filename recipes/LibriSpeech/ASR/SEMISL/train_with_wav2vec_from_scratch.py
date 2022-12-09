@@ -121,7 +121,7 @@ class ASR(sb.Brain):
         ids = batch.id
         tokens, tokens_lens = batch.tokens
         if semi_sup:
-             _, _, (tokens, tokens_lens) = self.compute_forward_ema(batch, stage=sb.Stage.VALID)
+             _, _, (tokens, tokens_lens) = self.compute_forward_ema(batch, stage=sb.Stage.VALID) # check that its the good format, je pense qu'il va falloir remove blanks and repeated tokens (j'ai deja la focntion pour le coup)
             
 
         if hasattr(self.modules, "env_corrupt") and stage == sb.Stage.TRAIN:
@@ -130,7 +130,6 @@ class ASR(sb.Brain):
 
         loss_ctc = self.hparams.ctc_cost(p_ctc, tokens, wav_lens, tokens_lens)
         loss = loss_ctc
-
         if stage != sb.Stage.TRAIN:
             # Decode token terms to words
             predicted_words = [
@@ -400,7 +399,7 @@ if __name__ == "__main__":
         valid_data,
         train_loader_kwargs=hparams["train_dataloader_opts"],
         valid_loader_kwargs=hparams["valid_dataloader_opts"],
-        pt_epoch=15,
+        pt_epoch=hparams["start_semi_sup"],
     )
 
     # Testing

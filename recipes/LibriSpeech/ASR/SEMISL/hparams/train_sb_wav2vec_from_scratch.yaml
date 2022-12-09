@@ -34,7 +34,7 @@ unsup_csv: !ref <output_folder>/../1986/train_unsup.csv
 
 # Training parameters
 number_of_epochs: 100
-start_semi_sup: 15 # in epoch for now.
+start_semi_sup: 35 # in epoch for now.  NOT PARSE :  TODO : fix it
 lr: 0.001
 auto_mix_prec: False
 sample_rate: 16000
