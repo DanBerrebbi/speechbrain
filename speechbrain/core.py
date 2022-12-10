@@ -984,7 +984,6 @@ class Brain:
 
     def _fit_train(self, train_set, valid_set, train_unsup_set, epoch, enable, pt_epoch=15):
         # Training stage
-        pt_epoch=37
         self.on_stage_start(Stage.TRAIN, epoch)
         self.modules.train()
 
@@ -1015,7 +1014,6 @@ class Brain:
             disable=not enable,
         )
         generator_sup, generator_unsup = t.__iter__(), t_unsup.__iter__()
-        
         if epoch >= pt_epoch:
             for iteration in range(500000):
                 if np.random.random()>0.5 :
@@ -1269,6 +1267,7 @@ class Brain:
 
         # Iterate epochs
         for epoch in epoch_counter:   # on pourra facilement changer ca en itération. 
+            #self._fit_valid(valid_set=valid_set, epoch=epoch, enable=enable)
             self._fit_train(train_set=train_set, valid_set=valid_set, train_unsup_set=train_unsup_set, epoch=epoch, enable=enable, pt_epoch=pt_epoch)
             self._fit_valid(valid_set=valid_set, epoch=epoch, enable=enable)
 

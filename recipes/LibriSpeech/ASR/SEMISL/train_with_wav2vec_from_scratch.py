@@ -63,6 +63,7 @@ class ASR(sb.Brain):
         p_tokens = None
         logits = self.modules.ctc_lin(x)
         p_ctc = self.hparams.log_softmax(logits)
+        #import pdb; pdb.set_trace()
         if stage != sb.Stage.TRAIN:
             p_tokens = sb.decoders.ctc_greedy_decode(
                 p_ctc, wav_lens, blank_id=self.hparams.blank_index
