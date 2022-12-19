@@ -145,7 +145,8 @@ class ASR(sb.Brain):
 
     def fit_batch(self, batch, unsup=False):
         should_step = self.step % self.grad_accumulation_factor == 0
-
+        self.model_optimizer.param_groups[0]['lr']=0.001  # ici je hardcode pour avoir un lr constant, à modifier plus tard
+        #import pdb; pdb.set_trace()
         # Managing automatic mixed precision
         if self.auto_mix_prec:
             self.wav2vec_optimizer.zero_grad()
